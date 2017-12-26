@@ -39,18 +39,17 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f1xx_hal.h"
-#include "SSD1306/ssd1306.h"
-#include "SSD1306/ssd1306_font.h"
-#include "Beeper/gpio_beeper.h"
 
 /* USER CODE BEGIN Includes */
-
+#include "SSD1306/ssd1306.h"
+#include "Beeper/gpio_beeper.h"
+#include "TSensor/ds18b20.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
 
-IWDG_HandleTypeDef hiwdg;
+TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -61,7 +60,7 @@ IWDG_HandleTypeDef hiwdg;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C2_Init(void);
-static void MX_IWDG_Init(void);
+static void MX_TIM1_Init(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -97,27 +96,59 @@ int main(void) {
 	/* Initialize all configured peripherals */
 	MX_GPIO_Init();
 	MX_I2C2_Init();
-	//MX_IWDG_Init();
+	MX_TIM1_Init();
 
 	/* USER CODE BEGIN 2 */
-
+	htim1.Instance->CR1 |= TIM_CR1_CEN;
+	gpio_beeper_Init();
+	ds18b20_init(GPIOB, GPIO_PIN_13, htim1.Instance);
+	ssd1306_Init();
+	gpio_beeper_Init();
+	gpio_beeper_Init();
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
-	gpio_beeper_Init();
-	//ds18b20_Init();
-	ssd1306_Init();
 	HAL_Delay(1000);
+	simple_float f;
+	char temp[3];
+	char temp_frac[5];
+	char buf[16];
+	//bool TWARN = false;
 	ssd1306_Fill(Black);
 	ssd1306_UpdateScreen();
-	HAL_Delay(1000);
-	ssd1306_SetCursor(23, 23);
-	ssd1306_WriteString("Test 123", Font_11x18, White);
-	ssd1306_UpdateScreen();
-	HAL_Delay(1000);
-	ssd1306_Fill(Black);
-	ssd1306_UpdateScreen();
+	while (1) {
+		f = ds18b20_get_temperature_simple();
+		if (f.is_valid) {
+			//HAL_Delay(1000);
+			if(f.integer > 60){
+				gpio_beeper_beep();
+			}
+			else{
+				gpio_beeper_stop();
+			}
+			ssd1306_SetCursor(23, 23);
+			itoa(f.integer, temp, 10);
+			itoa(f.fractional, temp_frac, 10);
+			snprintf(buf, sizeof buf, "%s.%s", temp, temp_frac);
+			ssd1306_WriteString(buf, Font_11x18, White);
+			ssd1306_UpdateScreen();
+			//HAL_Delay(1000);
+			//ssd1306_Fill(Black);
+			//ssd1306_UpdateScreen();
+		} else {
+			ssd1306_Fill(Black);
+			ssd1306_UpdateScreen();
+			//HAL_Delay(1000);
+			ssd1306_SetCursor(23, 23);
+			ssd1306_WriteString("Invalid Data", Font_11x18, White);
+			ssd1306_UpdateScreen();
+			HAL_Delay(1000);
+			ssd1306_Fill(Black);
+			ssd1306_UpdateScreen();
+		}
+		HAL_Delay(1000);
+	}
 	while (1) {
 		/* USER CODE END WHILE */
 
@@ -137,11 +168,9 @@ void SystemClock_Config(void) {
 
 	/**Initializes the CPU, AHB and APB busses clocks
 	 */
-	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI
-			| RCC_OSCILLATORTYPE_LSI;
+	RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
 	RCC_OscInitStruct.HSIState = RCC_HSI_ON;
 	RCC_OscInitStruct.HSICalibrationValue = 16;
-	RCC_OscInitStruct.LSIState = RCC_LSI_ON;
 	RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
 	if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
@@ -190,13 +219,32 @@ static void MX_I2C2_Init(void) {
 
 }
 
-/* IWDG init function */
-static void MX_IWDG_Init(void) {
+/* TIM1 init function */
+static void MX_TIM1_Init(void) {
 
-	hiwdg.Instance = IWDG;
-	hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
-	hiwdg.Init.Reload = 4095;
-	if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
+	TIM_ClockConfigTypeDef sClockSourceConfig;
+	TIM_MasterConfigTypeDef sMasterConfig;
+
+	htim1.Instance = TIM1;
+	htim1.Init.Prescaler = 7;
+	htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+	htim1.Init.Period = 65535;
+	htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+	htim1.Init.RepetitionCounter = 0;
+	htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+	if (HAL_TIM_Base_Init(&htim1) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+	sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+	if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK) {
+		_Error_Handler(__FILE__, __LINE__);
+	}
+
+	sMasterConfig.MasterOutputTrigger = TIM_TRGO_ENABLE;
+	sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+	if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig)
+			!= HAL_OK) {
 		_Error_Handler(__FILE__, __LINE__);
 	}
 
@@ -225,7 +273,7 @@ static void MX_GPIO_Init(void) {
 	/*Configure GPIO pins : PB12 PB13 */
 	GPIO_InitStruct.Pin = GPIO_PIN_12 | GPIO_PIN_13;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
 	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
